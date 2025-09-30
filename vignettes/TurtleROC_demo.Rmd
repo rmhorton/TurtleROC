@@ -1,0 +1,34 @@
+---
+title: 'TurtleROC Demo'
+output: html_document
+---
+
+# TurtleROC Demo
+
+This vignette demonstrates how to use TurtleROC to create interactive ROC curve visualizations.
+
+## Example Data
+
+    library(TurtleROC)
+    df <- data.frame(
+      score = c(0.9, 0.85, 0.8, 0.7, 0.6),
+      actual = c(1, 0, 1, 0, 1)
+    )
+
+## Turtle Path ROC Plot
+
+    TurtlePathWidget(df)
+
+## Shiny Example
+
+    library(shiny)
+    ui <- fluidPage(
+      TurtlePathWidgetOutput('rocWidget', width='600px', height='600px')
+    )
+    server <- function(input, output, session) {
+      output$rocWidget <- renderTurtlePathWidget({
+        TurtlePathWidget(df)
+      })
+    }
+    shinyApp(ui, server)
+
