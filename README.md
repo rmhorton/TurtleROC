@@ -6,10 +6,14 @@ TurtleROC provides tools for visualizing, explaining, and exploring ROC curves i
 
 ## Features
 - Turtle Path ROC plots
-- Binormal ROC curves
-- Gain curves
-- Total Operating Characteristic (TOC) curves
-- AUC explanations
+	+ Animated "turtle path" ROC curve with points turning bright as the turtle passes.
+	+ Confusion matrix showing TP, FP, FN, TN in real time.
+	+ Pause/play toggle for animation control.
+- Coming soon:
+	+ Binormal ROC curves
+	+ Gain curves
+	+ Total Operating Characteristic (TOC) curves
+	+ AUC explanations
 
 ## Installation
     install.packages('devtools')

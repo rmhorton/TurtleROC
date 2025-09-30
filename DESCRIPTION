@@ -4,11 +4,13 @@ Title: Interactive and Animated ROC Curve Visualizations
 Version: 0.1.0
 Authors@R: person("Robert", "Horton", email = "cybertory@gmail.com", role = c("aut", "cre"))
 Description: TurtleROC provides interactive and animated visualizations of ROC curves and related classifier performance metrics. It includes Turtle Path plots, binormal ROC curves, gain curves, Total Operating Characteristic (TOC) curves, and demonstrations of AUC computation.
-Depends: R (>= 4.0.0)
-Imports:
-    htmlwidgets,
-    d3r
 License: MIT
 Encoding: UTF-8
 LazyData: true
+Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
+Imports:
+    htmlwidgets (>= 1.6.2),
+    dplyr
+Depends:
+    R (>= 4.0.0)
