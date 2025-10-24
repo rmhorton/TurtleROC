@@ -1,0 +1,1246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Probabilistic View of AUC – Interactive ROC App</title>
+</head>
+<body>
+<div id="aucApp" class="aucviz-root">
+  <h2 data-role="title"></h2>
+  <div data-role="dataset-selector">
+    <label data-role="dataset-label"></label>
+    <select data-role="dataset-select"></select>
+  </div>
+  <div data-role="stage">
+    <div data-role="scatter-container"><svg data-role="scatter"></svg></div>
+    <div data-role="matrix-container"><svg data-role="matrix"></svg></div>
+    <svg data-role="overlay"></svg>
+  </div>
+  <div data-role="actions">
+    <div data-role="control-column">
+      <div data-role="arrange-bar"><button data-role="auto-arrange"></button></div>
+      <div data-role="sample-controls">
+        <button data-role="random-sample"></button>
+        <div data-role="sample-row">
+          <label data-role="points-label"></label>
+          <select data-role="sample-count">
+            <option value="1">1</option>
+            <option value="10">10</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div data-role="auc-column">
+      <div data-role="auc-display"></div>
+    </div>
+    <div data-role="legend-container"><svg data-role="legend" width="560" height="160"></svg></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const STYLE_ID = 'auc-visualization-styles';
+  const CSS_TEXT = `
+.aucviz-root { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 18px; background: #f9fafb; color: #111827; user-select: none; }
+.aucviz-root [data-role="title"] { text-align: center; margin: 0 0 8px; }
+.aucviz-root [data-role="dataset-selector"] { text-align: center; display: flex; justify-content: center; gap: 8px; align-items: center; }
+.aucviz-root [data-role="actions"] { display: grid; grid-template-columns: auto 1fr auto; align-items: flex-start; column-gap: 24px; margin: 16px auto 0; }
+.aucviz-root [data-role="control-column"] { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.aucviz-root [data-role="arrange-bar"] { display: flex; align-items: center; }
+.aucviz-root [data-role="sample-controls"] { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; visibility: hidden; opacity: 0; pointer-events: none; min-width: 0; transition: opacity 0.2s ease; }
+.aucviz-root [data-role="sample-controls"] button { margin: 0; }
+.aucviz-root [data-role="sample-row"] { display: flex; align-items: center; gap: 8px; }
+.aucviz-root [data-role="points-label"] { white-space: nowrap; }
+.aucviz-root [data-role="legend-container"] { display: flex; justify-content: flex-end; align-items: flex-start; }
+.aucviz-root [data-role="auc-column"] { display: flex; flex-direction: column; justify-content: flex-start; align-items: center; min-width: 0; }
+.aucviz-root [data-role="auc-display"] { text-align: center; min-height: 36px; width: 100%; white-space: nowrap; }
+.aucviz-root [data-role="stage"] { margin: auto; position: relative; }
+.aucviz-root [data-role="overlay"] { position: absolute; left: 0; top: 0; z-index: 10; pointer-events: none; }
+.aucviz-root button, .aucviz-root select { padding: 6px 12px; border-radius: 6px; border: 1px solid #9ca3af; cursor: pointer; background: #e5e7eb; margin: 5px; font-size: 14px; }
+.aucviz-root button:hover, .aucviz-root select:hover { background: #dde0e6; }
+.aucviz-root svg text { user-select: none; pointer-events: none; font-size: 12px; fill: #111827; }
+.aucviz-root [data-role="scatter-container"], .aucviz-root [data-role="matrix-container"] { border: 1px solid #d1d5db; border-radius: 8px; background: #fff; margin: 10px auto; }
+`; 
+
+  const DEFAULT_STRINGS = {
+    title: 'Probabilistic View of AUC',
+    datasetLabel: 'Select dataset:',
+    autoArrange: 'Auto-Arrange Cases',
+    randomSample: 'Random Sample',
+    pointsPerClick: 'Points per click:',
+    aucCalcLabel: 'AUC (calculated)',
+    aucSampleLabel: 'AUC (sampled)',
+    scatterTitle: 'Scatterplot of Scores',
+    matrixTitle: 'Matrix of Case Comparisons',
+    scatterXAxis: 'Score',
+    labelPos: 'Positive Cases',
+    labelNeg: 'Negative Cases',
+    legendTitle: 'Legend',
+    legend: [
+      { colorKey: 'cellPosWin', text: 'Positive > Negative (yellow)' },
+      { colorKey: 'cellNegWin', text: 'Positive < Negative (red)' },
+      { colorKey: 'cellTie', text: 'Tie (orange)' },
+      { colorKey: 'rocLine', text: 'ROC curve (blue)' }
+    ]
+  };
+
+  const DEFAULT_PALETTE = {
+    positiveFill: '#2ca02c',
+    negativeFill: '#d62728',
+    positiveAnchor: '#c7f0c7',
+    negativeAnchor: '#f7b3b3',
+    shapeStroke: '#222',
+    positiveLabel: '#fff',
+    negativeLabel: '#fff',
+    axisTick: '#555',
+    cellBase: '#fff',
+    cellGridStroke: '#e5e7eb',
+    cellBorder: '#ccc',
+    cellPosWin: '#ffff66',
+    cellNegWin: '#ff3333',
+    cellTie: '#ff9900',
+    rocLine: '#0077ff',
+    rocPointStroke: '#000',
+    sampleNew: '#000',
+    sampleOld: '#777',
+    legendStroke: '#111'
+  };
+
+  const DEFAULT_CONFIG = {
+    shapeRadius: 10,
+    diamondRadius: 12,
+    scatterTop: 60,
+    scatterBottom: 120,
+    margin: 80,
+    baseWidth: 900,
+    baseMatrixHeight: 540,
+    scatterHeight: 180,
+    diamondWidth: 24,
+    circleHeight: 24,
+    overlayExtraHeight: 300
+  };
+
+  function cloneLegend(legend){
+    return (legend || []).map(entry => ({ ...entry }));
+  }
+
+  function createStrings(overrides){
+    const result = { ...DEFAULT_STRINGS, legend: cloneLegend(DEFAULT_STRINGS.legend) };
+    if (!overrides) return result;
+    Object.keys(overrides).forEach(key => {
+      if (key === 'legend' && Array.isArray(overrides.legend)){
+        result.legend = cloneLegend(overrides.legend);
+      } else {
+        result[key] = overrides[key];
+      }
+    });
+    return result;
+  }
+
+  function normalizeDataset(dataset, name = 'dataset'){
+    if (!dataset || !Array.isArray(dataset.scores) || !Array.isArray(dataset.labels)){
+      throw new Error(`Invalid dataset "${name}": expected {scores:[], labels:[]}.`);
+    }
+    if (dataset.scores.length !== dataset.labels.length){
+      throw new Error(`Invalid dataset "${name}": scores and labels must have equal length.`);
+    }
+    const scores = dataset.scores.map((value, idx) => {
+      const num = Number(value);
+      if (!Number.isFinite(num)) throw new Error(`Invalid score at index ${idx} in dataset "${name}".`);
+      return num;
+    });
+    const labels = dataset.labels.map((value, idx) => {
+      if (value === true) return 1;
+      if (value === false) return 0;
+      const num = Number(value);
+      if (!Number.isFinite(num)) throw new Error(`Invalid label at index ${idx} in dataset "${name}".`);
+      return num >= 1 ? 1 : 0;
+    });
+    const normalized = { scores, labels };
+    if (dataset.meta) normalized.meta = { ...dataset.meta };
+    if (dataset.name && !normalized.meta) normalized.meta = { name: dataset.name };
+    return normalized;
+  }
+
+  function normalizeDatasetMap(map){
+    const result = {};
+    Object.keys(map || {}).forEach(key => {
+      result[key] = normalizeDataset(map[key], key);
+    });
+    return result;
+  }
+
+  const DEFAULT_DATASETS = normalizeDatasetMap({
+    'Test Set A': { scores: [20,19,18,17,16,15,14,13,11.5,11.5,10,9,8,7,6,5,4,3,2,1], labels: [1,1,1,1,0,1,1,0,1,0,1,0,1,0,0,1,0,0,0,0] },
+    'Test Set B': { scores: [20,19,18,17,16,15,14,13,11.5,11.5,9.5,9.5,8,7,6,5,4,3,2,1], labels: [1,1,1,1,1,1,1,0,1,0,1,0,1,0,0,1,0,0,0,0] },
+    'Test Set C': {
+      scores: [50,49,48,47,46,45,44,43,42,41,35,35,35,35,35,35,35,35,35,35,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,10,9,8,7,6,5,4,3,2,1],
+      labels: [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+    },
+    'Test Set D': { scores: Array.from({ length: 100 }, (_, i) => 100 - i), labels: Array.from({ length: 100 }, (_, i) => (i < 40 ? 1 : 0)) }
+  });
+
+  function computeROCData(scores, labels){
+    if (!Array.isArray(scores) || !Array.isArray(labels) || scores.length !== labels.length) return [];
+    const byScore = new Map();
+    let totalPos = 0;
+    let totalNeg = 0;
+    for (let i = 0; i < scores.length; i++){
+      const score = Number(scores[i]);
+      if (!Number.isFinite(score)) continue;
+      const label = labels[i] === 1 ? 1 : 0;
+      const entry = byScore.get(score) || { score, pos: 0, neg: 0 };
+      if (label){ entry.pos++; totalPos++; } else { entry.neg++; totalNeg++; }
+      byScore.set(score, entry);
+    }
+    const sorted = [...byScore.values()].sort((a, b) => b.score - a.score);
+    let cumPos = 0;
+    let cumNeg = 0;
+    return sorted.map(entry => {
+      cumPos += entry.pos;
+      cumNeg += entry.neg;
+      return {
+        threshold: entry.score,
+        fpr: totalNeg ? cumNeg / totalNeg : 0,
+        tpr: totalPos ? cumPos / totalPos : 0,
+        fpCount: cumNeg,
+        tpCount: cumPos
+      };
+    });
+  }
+
+  function createListenerMap(){
+    return {
+      datasetLoad: new Set(),
+      aucChange: new Set(),
+      sample: new Set(),
+      autoArrange: new Set(),
+      dragComplete: new Set()
+    };
+  }
+
+  function resolveRoot(target, doc = document){
+    if (!target) return null;
+    if (target instanceof Element) return target;
+    if (typeof target === 'string') return doc.querySelector(target);
+    return null;
+  }
+
+  function injectStyles(doc){
+    if (!doc || doc.getElementById(STYLE_ID)) return;
+    const style = doc.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = CSS_TEXT;
+    doc.head.appendChild(style);
+  }
+
+  function createSvgElement(tag, attrs = {}){
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    Object.keys(attrs).forEach(key => {
+      el.setAttribute(key, attrs[key]);
+    });
+    return el;
+  }
+
+  function diamondPoints(x, y, r){
+    return `${x},${y - r} ${x + r},${y} ${x},${y + r} ${x - r},${y}`;
+  }
+
+  class AUCVisualization {
+    constructor(rootOrOptions, options = {}){
+      let root = null;
+      let opts = options;
+      if (rootOrOptions instanceof Element || typeof rootOrOptions === 'string'){
+        root = resolveRoot(rootOrOptions);
+      } else if (rootOrOptions && typeof rootOrOptions === 'object' && !rootOrOptions.nodeType){
+        opts = rootOrOptions;
+        root = resolveRoot(opts.root || '#aucApp');
+      }
+      if (!root) throw new Error('AUC visualization root element not found.');
+
+      this.root = root;
+      this.doc = root.ownerDocument || document;
+      injectStyles(this.doc);
+      root.classList.add('aucviz-root');
+
+      this.strings = createStrings(opts.strings);
+      this.palette = { ...DEFAULT_PALETTE, ...(opts.palette || {}) };
+      this.config = { ...DEFAULT_CONFIG, ...(opts.config || {}) };
+      this.datasets = normalizeDatasetMap(opts.datasets || DEFAULT_DATASETS);
+
+      this.dom = {
+        root,
+        title: root.querySelector('[data-role="title"]'),
+        datasetLabel: root.querySelector('[data-role="dataset-label"]'),
+        datasetSelect: root.querySelector('[data-role="dataset-select"]'),
+        stage: root.querySelector('[data-role="stage"]'),
+        scatterContainer: root.querySelector('[data-role="scatter-container"]'),
+        matrixContainer: root.querySelector('[data-role="matrix-container"]'),
+        scatter: root.querySelector('[data-role="scatter"]'),
+        matrix: root.querySelector('[data-role="matrix"]'),
+        overlay: root.querySelector('[data-role="overlay"]'),
+        actionsRow: root.querySelector('[data-role="actions"]'),
+        controlColumn: root.querySelector('[data-role="control-column"]'),
+        autoBtn: root.querySelector('[data-role="auto-arrange"]'),
+        randBtn: root.querySelector('[data-role="random-sample"]'),
+        sampleControls: root.querySelector('[data-role="sample-controls"]'),
+        sampleSelect: root.querySelector('[data-role="sample-count"]'),
+        pointsLabel: root.querySelector('[data-role="points-label"]'),
+        aucDisplay: root.querySelector('[data-role="auc-display"]'),
+        legend: root.querySelector('[data-role="legend"]')
+      };
+
+      if (!this.dom.scatter || !this.dom.matrix || !this.dom.overlay){
+        throw new Error('AUC visualization markup is missing required SVG elements.');
+      }
+
+      this.viz = {
+        scores: [],
+        labels: [],
+        nPos: 0,
+        nNeg: 0,
+        scoreMin: 0,
+        scoreMax: 0,
+        scaleX: (x) => x
+      };
+
+      this.nodes = [];
+      this.posAnchors = [];
+      this.negAnchors = [];
+      this.cellLayer = null;
+      this.rocPath = null;
+      this.rocPoints = null;
+      this.samplesOld = null;
+      this.samplesNew = null;
+
+      this.cumY = 0;
+      this.cumR = 0;
+      this.cumO = 0;
+      this.lastCalculatedAUC = null;
+      this.lastSampleAUC = null;
+      this.pendingSampleEvent = null;
+
+      this.currentDatasetName = null;
+      this.currentDataset = null;
+      this.currentDatasetMeta = null;
+
+      this.eventsBound = false;
+      this.dragNode = null;
+      this.dragOffset = { x: 0, y: 0 };
+
+      this.listeners = createListenerMap();
+      if (opts.hooks){
+        Object.entries(opts.hooks).forEach(([event, handler]) => {
+          this.on(event, handler);
+        });
+      }
+
+      this.boundAutoArrange = () => this.autoArrange();
+      this.boundRandomSample = () => this.handleRandomSample();
+      this.boundDatasetChange = (event) => {
+        const value = event?.target?.value;
+        if (value) this.loadDatasetByName(value);
+      };
+      this.boundMouseDown = (event) => this.handleMouseDown(event);
+      this.boundMouseMove = (event) => this.handleMouseMove(event);
+      this.boundMouseUp = (event) => this.handleMouseUp(event);
+
+      this.setStaticText();
+      this.populateDatasetSelect();
+      this.bindEvents();
+
+      const autoInit = opts.autoInit !== false;
+      if (autoInit){
+        const initial = opts.initialDataset || (this.dom.datasetSelect && this.dom.datasetSelect.value) || Object.keys(this.datasets)[0];
+        if (initial) this.loadDatasetByName(initial);
+      }
+    }
+
+    // --- Utility getters ---
+    get margin(){
+      return this.config.margin;
+    }
+
+    set margin(value){
+      this.config.margin = value;
+    }
+
+    // --- Event helpers ---
+    emit(event, payload){
+      const bucket = this.listeners[event];
+      if (!bucket) return;
+      bucket.forEach(handler => {
+        try { handler(payload); }
+        catch (err){ console.error(`AUC visualization listener for "${event}" failed:`, err); }
+      });
+    }
+
+    on(event, handler){
+      if (!handler || typeof handler !== 'function' || !this.listeners[event]) return () => {};
+      this.listeners[event].add(handler);
+      return () => this.off(event, handler);
+    }
+
+    off(event, handler){
+      if (!this.listeners[event]) return;
+      this.listeners[event].delete(handler);
+    }
+
+    // --- Markup helpers ---
+    setStaticText(){
+      if (this.dom.title) this.dom.title.textContent = this.strings.title;
+      if (this.dom.datasetLabel) this.dom.datasetLabel.textContent = this.strings.datasetLabel;
+      if (this.dom.autoBtn) this.dom.autoBtn.textContent = this.strings.autoArrange;
+      if (this.dom.randBtn) this.dom.randBtn.textContent = this.strings.randomSample;
+      if (this.dom.pointsLabel) this.dom.pointsLabel.textContent = this.strings.pointsPerClick;
+      const aucDisplay = this.dom.aucDisplay;
+      if (aucDisplay) aucDisplay.textContent = '';
+    }
+
+    populateDatasetSelect(){
+      const select = this.dom.datasetSelect;
+      if (!select) return;
+      const previous = this.currentDatasetName;
+      select.innerHTML = '';
+      Object.keys(this.datasets).forEach(name => {
+        const opt = this.doc.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        select.appendChild(opt);
+      });
+      if (previous && this.datasets[previous]){
+        select.value = previous;
+      } else if (select.options.length) {
+        select.value = select.options[0].value;
+      }
+    }
+
+    bindEvents(){
+      if (this.eventsBound) return;
+      this.eventsBound = true;
+
+      if (this.dom.autoBtn){
+        this.dom.autoBtn.addEventListener('click', this.boundAutoArrange);
+      }
+
+      if (this.dom.randBtn){
+        this.dom.randBtn.addEventListener('click', this.boundRandomSample);
+      }
+
+      if (this.dom.datasetSelect){
+        this.dom.datasetSelect.addEventListener('change', this.boundDatasetChange);
+      }
+
+      this.doc.addEventListener('mousedown', this.boundMouseDown);
+      this.doc.addEventListener('mousemove', this.boundMouseMove);
+      this.doc.addEventListener('mouseup', this.boundMouseUp);
+    }
+
+    destroy(){
+      if (this.dom.autoBtn) this.dom.autoBtn.removeEventListener('click', this.boundAutoArrange);
+      if (this.dom.randBtn) this.dom.randBtn.removeEventListener('click', this.boundRandomSample);
+      if (this.dom.datasetSelect) this.dom.datasetSelect.removeEventListener('change', this.boundDatasetChange);
+      this.doc.removeEventListener('mousedown', this.boundMouseDown);
+      this.doc.removeEventListener('mousemove', this.boundMouseMove);
+      this.doc.removeEventListener('mouseup', this.boundMouseUp);
+      this.eventsBound = false;
+    }
+
+    handleRandomSample(){
+      const { cellW, cellH, nNeg, nPos } = this.viz;
+      if (!cellW || !cellH) return;
+
+      [...(this.samplesNew?.childNodes || [])].forEach(node => {
+        if (node.setAttribute){
+          node.setAttribute('fill', this.palette.sampleOld);
+          node.setAttribute('opacity', '0.5');
+          this.samplesOld.appendChild(node);
+        }
+      });
+
+      const requested = parseInt(this.dom.sampleSelect?.value || '0', 10) || 0;
+      const added = { wins: 0, losses: 0, ties: 0, total: 0 };
+
+      for (let i = 0; i < requested; i++){
+        const rx = this.margin + Math.random() * (cellW * nNeg);
+        const ry = this.margin + Math.random() * (cellH * nPos);
+        const col = Math.floor((rx - this.margin) / cellW);
+        const row = nPos - 1 - Math.floor((ry - this.margin) / cellH);
+        if (col >= 0 && col < nNeg && row >= 0 && row < nPos){
+          const posAnchor = this.posAnchors[row];
+          const negAnchor = this.negAnchors[col];
+          const p = posAnchor?.occupied;
+          const ng = negAnchor?.occupied;
+          if (p && ng){
+            if (p.score > ng.score){ this.cumY++; added.wins++; }
+            else if (p.score < ng.score){ this.cumR++; added.losses++; }
+            else { this.cumO++; added.ties++; }
+            added.total++;
+            this.samplesNew.appendChild(createSvgElement('circle', { cx: rx, cy: ry, r: 2, fill: this.palette.sampleNew, opacity: '0.9' }));
+          }
+        }
+      }
+
+      this.pendingSampleEvent = { requested, added };
+      this.updateAUCDisplay();
+    }
+
+    handleMouseDown(event){
+      const target = event.target;
+      const node = this.nodes.find(n => n.shape === target);
+      if (!node) return;
+      this.dragNode = node;
+      const box = node.shape.getBoundingClientRect();
+      this.dragOffset.x = box.left + box.width / 2 - event.clientX;
+      this.dragOffset.y = box.top + box.height / 2 - event.clientY;
+      node.originSVG = node.currentSVG;
+      const screenX = box.left + box.width / 2;
+      const screenY = box.top + box.height / 2;
+      this.dom.overlay.append(node.shape, node.label);
+      node.currentSVG = this.dom.overlay;
+      const pt = this.dom.overlay.createSVGPoint();
+      pt.x = screenX;
+      pt.y = screenY;
+      const local = pt.matrixTransform(this.dom.overlay.getScreenCTM().inverse());
+      this.setC(node, local.x, local.y);
+      event.preventDefault();
+    }
+
+    handleMouseMove(event){
+      if (!this.dragNode) return;
+      const pt = this.dom.overlay.createSVGPoint();
+      pt.x = event.clientX + this.dragOffset.x;
+      pt.y = event.clientY + this.dragOffset.y;
+      const local = pt.matrixTransform(this.dom.overlay.getScreenCTM().inverse());
+      this.setC(this.dragNode, local.x, local.y);
+    }
+
+    handleMouseUp(event){
+      const node = this.dragNode;
+      if (!node) return;
+
+      const cx = event.clientX;
+      const cy = event.clientY;
+      const from = node.originSVG === this.dom.matrix ? 'matrix' : 'scatter';
+
+      this.posAnchors.forEach(anchor => { if (anchor.occupied === node) anchor.occupied = null; });
+      this.negAnchors.forEach(anchor => { if (anchor.occupied === node) anchor.occupied = null; });
+
+      const scatterBox = this.dom.scatter.getBoundingClientRect();
+      const inScatter = cx >= scatterBox.left && cx <= scatterBox.right && cy >= scatterBox.top && cy <= scatterBox.bottom;
+
+      const anchors = [...this.posAnchors, ...this.negAnchors];
+      let closest = { anchor: null, distance: Number.POSITIVE_INFINITY };
+      anchors.forEach(anchor => {
+        const pt = anchor.svg.createSVGPoint();
+        pt.x = anchor.x;
+        pt.y = anchor.y;
+        const screen = pt.matrixTransform(anchor.svg.getScreenCTM());
+        const distance = Math.hypot(screen.x - cx, screen.y - cy);
+        if (distance < closest.distance) closest = { anchor, distance };
+      });
+
+      const nearAnchor = closest.distance < 40;
+      const destAnchor = closest.anchor;
+
+      const completePayload = {
+        from,
+        score: node.score,
+        label: node.isPos ? 1 : 0,
+        dataset: this.getCurrentDatasetSnapshot()
+      };
+
+      if (inScatter){
+        this.animateTo(node, node.home.svg, node.home.x, node.home.y, 800, () => {
+          delete node.originSVG;
+          this.emit('dragComplete', { ...completePayload, to: 'scatter' });
+        });
+      } else if (nearAnchor && destAnchor && ((node.isPos && destAnchor.isPos) || (!node.isPos && !destAnchor.isPos))){
+        destAnchor.occupied = node;
+        const anchorType = destAnchor.isPos ? 'positive' : 'negative';
+        const anchorIndex = destAnchor.isPos ? this.posAnchors.indexOf(destAnchor) : this.negAnchors.indexOf(destAnchor);
+        this.animateTo(node, destAnchor.svg, destAnchor.x, destAnchor.y, 800, () => {
+          delete node.originSVG;
+          this.emit('dragComplete', { ...completePayload, to: 'anchor', anchorType, anchorIndex });
+        });
+      } else {
+        this.animateTo(node, node.home.svg, node.home.x, node.home.y, 800, () => {
+          delete node.originSVG;
+          this.emit('dragComplete', { ...completePayload, to: 'scatter' });
+        });
+      }
+
+      this.dragNode = null;
+    }
+
+    autoArrange(){
+      this.posAnchors.forEach(anchor => anchor.occupied = null);
+      this.negAnchors.forEach(anchor => anchor.occupied = null);
+
+      const positiveNodes = this.nodes.filter(node => node.isPos).sort((a, b) => b.score - a.score);
+      const negativeNodes = this.nodes.filter(node => !node.isPos).sort((a, b) => b.score - a.score);
+
+      positiveNodes.forEach((node, index) => {
+        const anchor = this.posAnchors[index];
+        if (!anchor) return;
+        anchor.occupied = node;
+        this.animateTo(node, this.dom.matrix, anchor.x, anchor.y, 800);
+        node.currentSVG = this.dom.matrix;
+      });
+
+      negativeNodes.forEach((node, index) => {
+        const anchor = this.negAnchors[index];
+        if (!anchor) return;
+        anchor.occupied = node;
+        this.animateTo(node, this.dom.matrix, anchor.x, anchor.y, 800);
+        node.currentSVG = this.dom.matrix;
+      });
+
+      this.emit('autoArrange', { dataset: this.getCurrentDatasetSnapshot() });
+    }
+
+    resizeForDataset(nNeg, nPos){
+      const { baseWidth, baseMatrixHeight, scatterHeight, diamondWidth, circleHeight, overlayExtraHeight } = this.config;
+      const extraW = Math.max(0, nNeg - 20);
+      const extraH = Math.max(0, nPos - 30);
+      const newWidth = baseWidth + extraW * diamondWidth;
+      const newMatrixHeight = baseMatrixHeight + extraH * circleHeight;
+
+      this.dom.scatter.setAttribute('viewBox', `0 0 ${newWidth} ${scatterHeight}`);
+      this.dom.matrix.setAttribute('viewBox', `0 0 ${newWidth} ${newMatrixHeight}`);
+      this.dom.overlay.setAttribute('viewBox', `0 0 ${newWidth} ${newMatrixHeight + overlayExtraHeight}`);
+
+      this.dom.scatter.style.width = `${newWidth}px`;
+      this.dom.scatter.style.height = `${scatterHeight}px`;
+      this.dom.matrix.style.width = `${newWidth}px`;
+      this.dom.matrix.style.height = `${newMatrixHeight}px`;
+      this.dom.overlay.style.width = `${newWidth}px`;
+      this.dom.overlay.style.height = `${newMatrixHeight + overlayExtraHeight}px`;
+
+      if (this.dom.stage) this.dom.stage.style.width = `${newWidth}px`;
+      if (this.dom.scatterContainer) this.dom.scatterContainer.style.width = `${newWidth}px`;
+      if (this.dom.matrixContainer) this.dom.matrixContainer.style.width = `${newWidth}px`;
+      if (this.dom.actionsRow) this.dom.actionsRow.style.width = `${newWidth}px`;
+
+      this.W = newWidth;
+      this.matrixH = newMatrixHeight;
+      this.scatterHeight = scatterHeight;
+      this.overlayHeight = newMatrixHeight + overlayExtraHeight;
+      this.scatterViewHeight = scatterHeight;
+    }
+
+    resetSamples(){
+      this.cumY = 0;
+      this.cumR = 0;
+      this.cumO = 0;
+      this.lastSampleAUC = null;
+      this.pendingSampleEvent = null;
+      if (this.samplesOld) this.samplesOld.innerHTML = '';
+      if (this.samplesNew) this.samplesNew.innerHTML = '';
+    }
+
+    calcMatrixAUC(){
+      if (!this.cellLayer) return null;
+      const rects = this.cellLayer.querySelectorAll('rect');
+      let wins = 0, ties = 0, losses = 0;
+      rects.forEach(rect => {
+        const fill = rect.getAttribute('fill');
+        if (fill === this.palette.cellPosWin) wins++;
+        else if (fill === this.palette.cellNegWin) losses++;
+        else if (fill === this.palette.cellTie) ties++;
+      });
+      const total = wins + ties + losses;
+      return total > 0 ? (wins + 0.5 * ties) / total : null;
+    }
+
+    updateAUCDisplay(){
+      const total = this.cumY + this.cumO + this.cumR;
+      const calc = this.calcMatrixAUC();
+      if (total > 0){
+        const sampleAUC = (this.cumY + 0.5 * this.cumO) / total;
+        if (this.dom.aucDisplay){
+          this.dom.aucDisplay.innerHTML = `${this.strings.aucCalcLabel}: ${calc?.toFixed(3) || '—'}<br>${this.strings.aucSampleLabel}: ${sampleAUC.toFixed(3)} (${total} pts)`;
+        }
+        if (this.pendingSampleEvent){
+          const payload = {
+            requested: this.pendingSampleEvent.requested,
+            added: { ...this.pendingSampleEvent.added },
+            totals: { wins: this.cumY, ties: this.cumO, losses: this.cumR, total },
+            sampleAUC,
+            calculatedAUC: calc,
+            dataset: this.getCurrentDatasetSnapshot()
+          };
+          this.emit('sample', payload);
+          this.pendingSampleEvent = null;
+        }
+        if (sampleAUC !== this.lastSampleAUC || calc !== this.lastCalculatedAUC){
+          this.lastSampleAUC = sampleAUC;
+          this.emit('aucChange', {
+            source: 'sample',
+            calculated: calc,
+            sample: sampleAUC,
+            totals: { wins: this.cumY, ties: this.cumO, losses: this.cumR, total },
+            dataset: this.getCurrentDatasetSnapshot()
+          });
+        }
+      } else {
+        if (this.pendingSampleEvent){
+          const payload = {
+            requested: this.pendingSampleEvent.requested,
+            added: { ...this.pendingSampleEvent.added },
+            totals: { wins: this.cumY, ties: this.cumO, losses: this.cumR, total },
+            sampleAUC: null,
+            calculatedAUC: calc,
+            dataset: this.getCurrentDatasetSnapshot()
+          };
+          this.emit('sample', payload);
+          this.pendingSampleEvent = null;
+        }
+      }
+    }
+
+    drawScatter(){
+      const { scatter } = this.dom;
+      const { scores, labels, scaleX } = this.viz;
+      scatter.innerHTML = '';
+
+      scatter.appendChild(createSvgElement('text', { x: this.W / 2, y: 20, 'text-anchor': 'middle', 'font-weight': '600' })).textContent = this.strings.scatterTitle;
+      scatter.appendChild(createSvgElement('text', { x: this.W / 2, y: this.scatterViewHeight - 5, 'text-anchor': 'middle', 'font-weight': '500' })).textContent = this.strings.scatterXAxis;
+
+      const range = this.viz.scoreMax - this.viz.scoreMin;
+      const numTicks = 5;
+      for (let i = 0; i <= numTicks; i++){
+        const val = this.viz.scoreMin + range * (i / numTicks);
+        const x = scaleX(val);
+        scatter.appendChild(createSvgElement('line', { x1: x, y1: this.scatterViewHeight - 20, x2: x, y2: this.scatterViewHeight - 10, stroke: this.palette.axisTick }));
+        scatter.appendChild(createSvgElement('text', { x, y: this.scatterViewHeight - 25, 'text-anchor': 'middle' })).textContent = val.toFixed(1);
+      }
+
+      scatter.appendChild(createSvgElement('text', { x: this.margin, y: this.config.scatterTop - 20, 'text-anchor': 'start', 'font-weight': '500' })).textContent = this.strings.labelPos;
+      scatter.appendChild(createSvgElement('text', { x: this.margin, y: this.config.scatterBottom + 25, 'text-anchor': 'start', 'font-weight': '500' })).textContent = this.strings.labelNeg;
+
+      const posGroups = {};
+      const negGroups = {};
+      scores.forEach((score, index) => {
+        const group = labels[index] ? posGroups : negGroups;
+        const key = score;
+        if (!group[key]) group[key] = [];
+        group[key].push(index);
+      });
+
+      this.nodes = [];
+
+      scores.forEach((score, index) => {
+        const isPos = !!labels[index];
+        const x = scaleX(score);
+        const baseY = isPos ? this.config.scatterTop : this.config.scatterBottom;
+        const group = isPos ? posGroups[score] : negGroups[score];
+        let offset = 0;
+        if (group && group.length > 1){
+          const idx = group.indexOf(index);
+          const spacing = 4;
+          const center = (group.length - 1) / 2;
+          offset = (idx - center) * spacing;
+        }
+        const y = baseY + offset;
+
+        const anchor = isPos
+          ? createSvgElement('circle', { cx: x, cy: y, r: this.config.shapeRadius, fill: 'none', stroke: this.palette.positiveAnchor, 'stroke-width': '4', 'stroke-dasharray': '2 2' })
+          : createSvgElement('polygon', { points: diamondPoints(x, y, this.config.diamondRadius), fill: 'none', stroke: this.palette.negativeAnchor, 'stroke-width': '4', 'stroke-dasharray': '2 2' });
+        scatter.appendChild(anchor);
+
+        const shape = isPos
+          ? createSvgElement('circle', { cx: x, cy: y, r: this.config.shapeRadius, fill: this.palette.positiveFill, stroke: this.palette.shapeStroke })
+          : createSvgElement('polygon', { points: diamondPoints(x, y, this.config.diamondRadius), fill: this.palette.negativeFill, stroke: this.palette.shapeStroke });
+        const label = createSvgElement('text', { x, y, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-size': '11' });
+        label.style.fill = isPos ? this.palette.positiveLabel : this.palette.negativeLabel;
+        label.textContent = score;
+        scatter.appendChild(shape);
+        scatter.appendChild(label);
+
+        this.nodes.push({
+          isPos,
+          score,
+          shape,
+          label,
+          anchor,
+          home: { x, y, svg: this.dom.scatter },
+          currentSVG: this.dom.scatter
+        });
+      });
+    }
+
+    drawMatrix(){
+      const { matrix } = this.dom;
+      matrix.innerHTML = '';
+
+      const { nPos, nNeg, cellW, cellH } = this.viz;
+
+      const title = createSvgElement('text', { x: this.W / 2, y: 30, 'text-anchor': 'middle', 'font-weight': '600', 'font-size': '16' });
+      title.textContent = this.strings.matrixTitle;
+      matrix.appendChild(title);
+
+      this.posAnchors = [];
+      this.negAnchors = [];
+
+      for (let r = 0; r < nPos; r++){
+        const y = this.margin + (nPos - r - 0.5) * cellH;
+        const x = this.margin + this.viz.gridW + 28;
+        matrix.appendChild(createSvgElement('circle', { cx: x, cy: y, r: this.config.shapeRadius, fill: 'none', stroke: this.palette.positiveAnchor, 'stroke-width': '4', 'stroke-dasharray': '2 2' }));
+        this.posAnchors.push({ x, y, svg: matrix, occupied: null, isPos: true });
+      }
+
+      for (let c = 0; c < nNeg; c++){
+        const x = this.margin + (c + 0.5) * cellW;
+        const y = this.margin - 30;
+        matrix.appendChild(createSvgElement('polygon', { points: diamondPoints(x, y, this.config.diamondRadius), fill: 'none', stroke: this.palette.negativeAnchor, 'stroke-width': '4', 'stroke-dasharray': '2 2' }));
+        this.negAnchors.push({ x, y, svg: matrix, occupied: null, isPos: false });
+      }
+
+      for (let r = 0; r < nPos; r++){
+        for (let c = 0; c < nNeg; c++){
+          matrix.appendChild(createSvgElement('rect', {
+            x: this.margin + c * cellW,
+            y: this.margin + (nPos - r - 1) * cellH,
+            width: cellW,
+            height: cellH,
+            fill: this.palette.cellBase,
+            stroke: this.palette.cellGridStroke
+          }));
+        }
+      }
+
+      for (let c = 0; c < nNeg; c++){
+        const x = this.margin + (c + 0.5) * cellW;
+        matrix.appendChild(createSvgElement('text', { x, y: this.matrixH - 20, 'text-anchor': 'middle' })).textContent = c + 1;
+      }
+
+      for (let r = 0; r < nPos; r++){
+        const y = this.margin + (nPos - r - 0.5) * cellH;
+        matrix.appendChild(createSvgElement('text', { x: this.margin - 20, y, 'text-anchor': 'end' })).textContent = r + 1;
+      }
+
+      matrix.appendChild(createSvgElement('text', {
+        x: this.margin - 40,
+        y: this.matrixH / 2,
+        'text-anchor': 'middle',
+        'dominant-baseline': 'middle',
+        transform: `rotate(-90, ${this.margin - 40}, ${this.matrixH / 2})`,
+        'font-weight': '600',
+        'font-size': '14'
+      })).textContent = this.strings.labelPos;
+
+      matrix.appendChild(createSvgElement('text', {
+        x: this.margin + this.viz.gridW / 2,
+        y: this.matrixH - 5,
+        'text-anchor': 'middle',
+        'font-weight': '500'
+      })).textContent = this.strings.labelNeg;
+
+      this.cellLayer = createSvgElement('g');
+      matrix.appendChild(this.cellLayer);
+      this.rocPath = createSvgElement('path', { stroke: this.palette.rocLine, 'stroke-width': '5', fill: 'none', visibility: 'hidden' });
+      this.rocPoints = createSvgElement('g', { visibility: 'hidden' });
+      matrix.appendChild(this.rocPath);
+      matrix.appendChild(this.rocPoints);
+      this.samplesOld = createSvgElement('g');
+      this.samplesNew = createSvgElement('g');
+      matrix.appendChild(this.samplesOld);
+      matrix.appendChild(this.samplesNew);
+    }
+
+    drawLegend(){
+      const legend = this.dom.legend;
+      if (!legend) return;
+      legend.innerHTML = '';
+      const group = createSvgElement('g');
+      legend.appendChild(group);
+
+      const title = createSvgElement('text', { x: 20, y: 18, 'font-weight': '600' });
+      title.textContent = this.strings.legendTitle;
+      group.appendChild(title);
+
+      this.strings.legend.forEach((entry, index) => {
+        const y = 36 + index * 26;
+        const color = this.palette[entry.colorKey] || '#ccc';
+        group.appendChild(createSvgElement('rect', { x: 20, y, width: 14, height: 14, fill: color, stroke: this.palette.legendStroke }));
+        group.appendChild(createSvgElement('text', { x: 40, y: y + 11 })).textContent = entry.text;
+      });
+
+      const bbox = group.getBBox();
+      const padding = 12;
+      const width = Math.ceil(bbox.x + bbox.width + padding);
+      const height = Math.ceil(bbox.y + bbox.height + padding);
+      legend.setAttribute('viewBox', `0 0 ${Math.max(width, 1)} ${Math.max(height, 1)}`);
+      legend.setAttribute('width', `${width}`);
+      legend.setAttribute('height', `${height}`);
+      legend.style.width = `${width}px`;
+      legend.style.height = `${height}px`;
+    }
+
+    updateColors(){
+      const { nPos, nNeg, cellW, cellH } = this.viz;
+      if (!cellW || !cellH){
+        if (this.cellLayer) this.cellLayer.innerHTML = '';
+        if (this.dom.sampleControls){
+          this.dom.sampleControls.style.visibility = 'hidden';
+          this.dom.sampleControls.style.opacity = '0';
+          this.dom.sampleControls.style.pointerEvents = 'none';
+        }
+        if (this.dom.aucDisplay) this.dom.aucDisplay.textContent = '';
+        this.resetSamples();
+        return;
+      }
+
+      this.cellLayer.innerHTML = '';
+      this.rocPath.setAttribute('visibility', 'hidden');
+      this.rocPoints.setAttribute('visibility', 'hidden');
+
+      let filled = 0;
+      for (let r = 0; r < nPos; r++){
+        const posAnchor = this.posAnchors[r];
+        const posNode = posAnchor?.occupied;
+        if (!posNode) continue;
+        for (let c = 0; c < nNeg; c++){
+          const negAnchor = this.negAnchors[c];
+          const negNode = negAnchor?.occupied;
+          if (!negNode) continue;
+          filled++;
+          let fill = this.palette.cellTie;
+          if (posNode.score > negNode.score) fill = this.palette.cellPosWin;
+          else if (posNode.score < negNode.score) fill = this.palette.cellNegWin;
+          this.cellLayer.appendChild(createSvgElement('rect', {
+            x: this.margin + c * cellW,
+            y: this.margin + (nPos - r - 1) * cellH,
+            width: cellW,
+            height: cellH,
+            fill,
+            stroke: this.palette.cellBorder
+          }));
+        }
+      }
+
+      if (filled === nPos * nNeg && nPos && nNeg){
+        if (this.dom.sampleControls){
+          this.dom.sampleControls.style.visibility = 'visible';
+          this.dom.sampleControls.style.opacity = '1';
+          this.dom.sampleControls.style.pointerEvents = 'auto';
+        }
+        const calcAUC = this.calcMatrixAUC();
+        if (this.dom.aucDisplay){
+          this.dom.aucDisplay.innerHTML = `${this.strings.aucCalcLabel}: ${calcAUC?.toFixed(3) || '—'}<br>${this.strings.aucSampleLabel}: — (0 pts)`;
+        }
+        this.drawROC();
+        if (calcAUC !== this.lastCalculatedAUC){
+          this.lastCalculatedAUC = calcAUC;
+          this.emit('aucChange', {
+            source: 'calc',
+            calculated: calcAUC,
+            sample: this.lastSampleAUC,
+            totals: { wins: this.cumY, ties: this.cumO, losses: this.cumR, total: this.cumY + this.cumO + this.cumR },
+            dataset: this.getCurrentDatasetSnapshot()
+          });
+        }
+      } else {
+        const hadAUC = this.lastCalculatedAUC !== null || this.lastSampleAUC !== null;
+        if (this.dom.sampleControls){
+          this.dom.sampleControls.style.visibility = 'hidden';
+          this.dom.sampleControls.style.opacity = '0';
+          this.dom.sampleControls.style.pointerEvents = 'none';
+        }
+        if (this.dom.aucDisplay) this.dom.aucDisplay.textContent = '';
+        this.resetSamples();
+        this.lastCalculatedAUC = null;
+        if (hadAUC){
+          this.emit('aucChange', {
+            source: 'reset',
+            calculated: null,
+            sample: null,
+            totals: null,
+            dataset: this.getCurrentDatasetSnapshot()
+          });
+        }
+      }
+    }
+
+    drawROC(){
+      const { nPos, nNeg, cellW, cellH } = this.viz;
+      if (!cellW || !cellH) return;
+
+      if (!this.inProperOrder()){
+        this.rocPath.setAttribute('visibility', 'hidden');
+        this.rocPoints.setAttribute('visibility', 'hidden');
+        return;
+      }
+
+      const posScores = this.posAnchors.map(anchor => anchor.occupied?.score).filter(score => score !== undefined);
+      const negScores = this.negAnchors.map(anchor => anchor.occupied?.score).filter(score => score !== undefined);
+      if (posScores.length !== this.posAnchors.length || negScores.length !== this.negAnchors.length){
+        this.rocPath.setAttribute('visibility', 'hidden');
+        this.rocPoints.setAttribute('visibility', 'hidden');
+        return;
+      }
+
+      const scoreList = [];
+      const labelList = [];
+      this.posAnchors.forEach(anchor => { scoreList.push(anchor.occupied.score); labelList.push(1); });
+      this.negAnchors.forEach(anchor => { scoreList.push(anchor.occupied.score); labelList.push(0); });
+      const roc = computeROCData(scoreList, labelList);
+      if (!roc.length){
+        this.rocPath.setAttribute('visibility', 'hidden');
+        this.rocPoints.setAttribute('visibility', 'hidden');
+        return;
+      }
+
+      const points = [[0, 0], ...roc.map(d => [d.fpCount, d.tpCount])];
+      const last = points[points.length - 1];
+      if (last[0] !== nNeg || last[1] !== nPos) points.push([nNeg, nPos]);
+
+      const toXY = ([gx, gy]) => [this.margin + gx * cellW, this.margin + (nPos - gy) * cellH];
+      const svgPoints = points.map(toXY);
+
+      this.rocPath.setAttribute('d', svgPoints.map((point, index) => index === 0 ? `M${point[0]},${point[1]}` : `L${point[0]},${point[1]}`).join(' '));
+      this.rocPath.setAttribute('visibility', 'visible');
+
+      this.rocPoints.innerHTML = '';
+      svgPoints.forEach(point => {
+        this.rocPoints.appendChild(createSvgElement('circle', { cx: point[0], cy: point[1], r: 6, fill: this.palette.rocLine, stroke: this.palette.rocPointStroke, 'stroke-width': 1 }));
+      });
+      this.rocPoints.setAttribute('visibility', 'visible');
+    }
+
+    inProperOrder(){
+      const posScores = this.posAnchors.map(anchor => anchor.occupied?.score ?? null);
+      const negScores = this.negAnchors.map(anchor => anchor.occupied?.score ?? null);
+      if (posScores.some(score => score === null) || negScores.some(score => score === null)) return false;
+      for (let i = 1; i < posScores.length; i++) if (posScores[i] > posScores[i - 1]) return false;
+      for (let i = 1; i < negScores.length; i++) if (negScores[i] > negScores[i - 1]) return false;
+      return true;
+    }
+
+    setC(node, x, y){
+      if (node.isPos){
+        node.shape.setAttribute('cx', x);
+        node.shape.setAttribute('cy', y);
+      } else {
+        node.shape.setAttribute('points', diamondPoints(x, y, this.config.diamondRadius));
+      }
+      node.label.setAttribute('x', x);
+      node.label.setAttribute('y', y);
+    }
+
+    animateTo(node, destSVG, x, y, duration = 800, onComplete){
+      const box = node.shape.getBoundingClientRect();
+      const start = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      const pt = destSVG.createSVGPoint();
+      pt.x = x;
+      pt.y = y;
+      const dest = pt.matrixTransform(destSVG.getScreenCTM());
+      this.dom.overlay.append(node.shape, node.label);
+      const startTime = performance.now();
+
+      const step = (timestamp) => {
+        const progress = Math.min((timestamp - startTime) / duration, 1);
+        const sx = start.x + (dest.x - start.x) * progress;
+        const sy = start.y + (dest.y - start.y) * progress;
+        const p = this.dom.overlay.createSVGPoint();
+        p.x = sx;
+        p.y = sy;
+        const local = p.matrixTransform(this.dom.overlay.getScreenCTM().inverse());
+        this.setC(node, local.x, local.y);
+        if (progress < 1){
+          requestAnimationFrame(step);
+        } else {
+          destSVG.append(node.shape, node.label);
+          node.currentSVG = destSVG;
+          this.setC(node, x, y);
+          this.updateColors();
+          if (typeof onComplete === 'function') onComplete();
+        }
+      };
+
+      requestAnimationFrame(step);
+    }
+
+    loadDatasetByName(name){
+      const dataset = this.datasets?.[name];
+      if (!dataset) throw new Error(`Dataset "${name}" not found.`);
+      if (this.dom.datasetSelect) this.dom.datasetSelect.value = name;
+      this.renderDataset(dataset, name);
+      this.emit('datasetLoad', { name, dataset: this.getCurrentDatasetSnapshot() });
+    }
+
+    loadDataset(dataset){
+      const normalized = normalizeDataset(dataset, 'custom dataset');
+      if (this.dom.datasetSelect) this.dom.datasetSelect.value = '';
+      this.renderDataset(normalized, normalized.meta?.name || null);
+      this.emit('datasetLoad', { name: normalized.meta?.name || null, dataset: this.getCurrentDatasetSnapshot() });
+    }
+
+    renderDataset(dataset, name){
+      const scores = [...dataset.scores];
+      const labels = [...dataset.labels];
+      this.currentDatasetName = name;
+      this.currentDatasetMeta = dataset.meta ? { ...dataset.meta } : null;
+      this.currentDataset = { scores: [...scores], labels: [...labels] };
+      if (this.currentDatasetMeta) this.currentDataset.meta = { ...this.currentDatasetMeta };
+      this.buildVisualization(scores, labels);
+    }
+
+    buildVisualization(scores, labels){
+      const nPos = labels.filter(label => label === 1).length;
+      const nNeg = labels.filter(label => label === 0).length;
+
+      this.resizeForDataset(nNeg, nPos);
+
+      this.dom.scatter.innerHTML = '';
+      this.dom.matrix.innerHTML = '';
+      this.dom.overlay.innerHTML = '';
+      if (this.dom.legend) this.dom.legend.innerHTML = '';
+
+      this.innerWidth = this.W - 2 * this.margin;
+      this.scatterViewHeight = this.config.scatterHeight;
+
+      this.viz = {
+        scores,
+        labels,
+        nPos,
+        nNeg,
+        scoreMin: Math.min(...scores),
+        scoreMax: Math.max(...scores),
+        scaleX: (value) => {
+          const domain = (this.viz.scoreMax - this.viz.scoreMin) || 1;
+          return this.margin + ((value - this.viz.scoreMin) / domain) * (this.innerWidth - 40);
+        }
+      };
+
+      this.viz.gridW = this.innerWidth - 32;
+      this.viz.gridH = this.matrixH - 120;
+      this.viz.cellW = this.viz.nNeg ? this.viz.gridW / this.viz.nNeg : 0;
+      this.viz.cellH = this.viz.nPos ? this.viz.gridH / this.viz.nPos : 0;
+
+      this.drawScatter();
+      this.drawMatrix();
+      this.drawLegend();
+      this.resetSamples();
+      this.updateColors();
+    }
+
+    setPalette(overrides){
+      if (!overrides) return;
+      Object.assign(this.palette, overrides);
+      if (this.currentDataset){
+        this.renderDataset({
+          scores: [...this.currentDataset.scores],
+          labels: [...this.currentDataset.labels],
+          meta: this.currentDataset.meta ? { ...this.currentDataset.meta } : undefined
+        }, this.currentDatasetName);
+      }
+    }
+
+    setStrings(overrides){
+      if (!overrides) return;
+      this.strings = createStrings(overrides);
+      this.setStaticText();
+      if (this.currentDataset){
+        this.renderDataset({
+          scores: [...this.currentDataset.scores],
+          labels: [...this.currentDataset.labels],
+          meta: this.currentDataset.meta ? { ...this.currentDataset.meta } : undefined
+        }, this.currentDatasetName);
+      }
+    }
+
+    setConfig(overrides){
+      if (!overrides) return;
+      Object.assign(this.config, overrides);
+      if (this.currentDataset){
+        this.renderDataset({
+          scores: [...this.currentDataset.scores],
+          labels: [...this.currentDataset.labels],
+          meta: this.currentDataset.meta ? { ...this.currentDataset.meta } : undefined
+        }, this.currentDatasetName);
+      }
+    }
+
+    setDatasets(newDatasets){
+      if (!newDatasets) return;
+      this.datasets = normalizeDatasetMap(newDatasets);
+      const existing = this.currentDatasetName;
+      this.populateDatasetSelect();
+      if (existing && this.datasets[existing]){
+        this.loadDatasetByName(existing);
+      } else {
+        const names = Object.keys(this.datasets);
+        if (names.length) this.loadDatasetByName(names[0]);
+      }
+    }
+
+    getCurrentDatasetName(){
+      return this.currentDatasetName;
+    }
+
+    getCurrentDataset(){
+      return this.getCurrentDatasetSnapshot();
+    }
+
+    getCurrentDatasetSnapshot(){
+      if (!this.currentDataset) return null;
+      const snapshot = {
+        scores: [...this.currentDataset.scores],
+        labels: [...this.currentDataset.labels]
+      };
+      if (this.currentDataset.meta) snapshot.meta = { ...this.currentDataset.meta };
+      if (this.currentDatasetName !== null) snapshot.name = this.currentDatasetName;
+      return snapshot;
+    }
+
+    rebuild(){
+      if (this.currentDataset){
+        this.renderDataset({
+          scores: [...this.currentDataset.scores],
+          labels: [...this.currentDataset.labels],
+          meta: this.currentDataset.meta ? { ...this.currentDataset.meta } : undefined
+        }, this.currentDatasetName);
+      }
+    }
+  }
+
+  function createAUCVisualization(rootOrOptions, options = {}){
+    const instance = new AUCVisualization(rootOrOptions, options);
+    return {
+      loadDatasetByName: (name) => instance.loadDatasetByName(name),
+      loadDataset: (data) => instance.loadDataset(data),
+      setPalette: (overrides) => instance.setPalette(overrides),
+      setStrings: (overrides) => instance.setStrings(overrides),
+      setConfig: (overrides) => instance.setConfig(overrides),
+      setDatasets: (map) => instance.setDatasets(map),
+      getCurrentDatasetName: () => instance.getCurrentDatasetName(),
+      getCurrentDataset: () => instance.getCurrentDataset(),
+      rebuild: () => instance.rebuild(),
+      on: (event, handler) => instance.on(event, handler),
+      off: (event, handler) => instance.off(event, handler),
+      destroy: () => instance.destroy()
+    };
+  }
+
+  window.AUCVisualization = {
+    create: createAUCVisualization,
+    defaults: {
+      strings: createStrings(),
+      palette: { ...DEFAULT_PALETTE },
+      config: { ...DEFAULT_CONFIG }
+    }
+  };
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const root = document.getElementById('aucApp');
+    if (root){
+      window.aucVisualization = createAUCVisualization(root);
+    }
+  });
+})();
+</script>
+</body>
+</html>
